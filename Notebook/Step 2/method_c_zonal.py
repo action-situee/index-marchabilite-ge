@@ -49,6 +49,8 @@ def compute_zonal_stat(segments_gdf, features_gdf, buffer_radius=15, value_colum
                     value = values.median()
                 elif stat == "std":
                     value = values.std()
+                elif stat == "max":
+                    value = values.max()
                 else:
                     raise ValueError(f"Unsupported stat: {stat}")
             else:
