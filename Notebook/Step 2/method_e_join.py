@@ -23,6 +23,10 @@ def spatial_join_maxoverlap(segments_gdf, attribute_gdf, value_column, segment_i
     if segments_gdf.crs != attribute_gdf.crs:
         attribute_gdf = attribute_gdf.to_crs(segments_gdf.crs)
 
+    # Ensure valid geometries
+    segments_gdf = segments_gdf[segments_gdf.is_valid]
+    attribute_gdf = attribute_gdf[attribute_gdf.is_valid]
+
     # Spatial join: all intersecting zones
     joined = gpd.sjoin(
         segments_gdf[[segment_id_col, 'geometry']], 
@@ -31,19 +35,32 @@ def spatial_join_maxoverlap(segments_gdf, attribute_gdf, value_column, segment_i
         predicate="intersects"
     )
 
+    # For segments with NaN, try 'within'
+    missing = joined[joined[value_column].isna()][segment_id_col]
+    if not missing.empty:
+        missing_segments = segments_gdf[segments_gdf[segment_id_col].isin(missing)]
+        joined_within = gpd.sjoin(
+            missing_segments[[segment_id_col, 'geometry']],
+            attribute_gdf[[value_column, 'geometry']],
+            how="left",
+            predicate="within"
+        )
+        # Fill missing values
+        joined.loc[joined[segment_id_col].isin(missing), value_column] = joined_within[value_column].values
+
+
     # Compute overlap geometries (with tqdm for progress)
     tqdm.pandas(desc="Computing overlaps")
-    joined["overlap_geom"] = joined.progress_apply(
+    # Compute overlap geometries
+    joined["overlap_geom"] = joined.apply(
         lambda row: row.geometry.intersection(attribute_gdf.loc[row["index_right"]].geometry)
         if pd.notnull(row["index_right"]) else None,
         axis=1
     )
-
-    # Drop empty geometries
     joined = joined[joined["overlap_geom"].notnull()].copy()
     joined["overlap_area"] = joined["overlap_geom"].area
 
-    # Find the zone with the largest overlap
+    # Find the zone with the largest overlap for each segment
     col_name = feature_name if feature_name else value_column
     dominant = (
         joined.loc[joined.groupby(segment_id_col)["overlap_area"].idxmax()]
@@ -51,5 +68,7 @@ def spatial_join_maxoverlap(segments_gdf, attribute_gdf, value_column, segment_i
         .rename(columns={value_column: col_name})
         .reset_index(drop=True)
     )
-    
-    return dominant
+
+    # Merge back to segments_gdf to ensure all segments are present
+    result = segments_gdf[[segment_id_col]].merge(dominant, on=segment_id_col, how="left")
+    return result
