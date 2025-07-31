@@ -4,71 +4,68 @@ from tqdm import tqdm
 
 def spatial_join_maxoverlap(segments_gdf, attribute_gdf, value_column, segment_id_col="segment_id", feature_name=None):
     """
-    Assigns to each segment the value of the zone (polygon) that overlaps the most.
-
-    Uses sjoin for speed, then filters to keep only the dominant (max overlap) zone per segment.
-
+    Assigns zone type to segments based on which zone contains the largest portion of each segment.
+    
     Parameters:
-    - segments_gdf: GeoDataFrame of segments with unique ID.
-    - attribute_gdf: GeoDataFrame of polygons with a value column (e.g., vitesse).
-    - segment_id_col: Column name for the unique segment ID.
-    - value_column: Column in attribute_gdf to assign.
-    - feature_name: Desired output column name (str).
-
+    -----------
+    segments_gdf : GeoDataFrame
+        The 50m road segments
+    attribute_gdf : GeoDataFrame
+        The speed zone polygons
+    value_column : str
+        Name of column containing zone type (e.g. 'TYPE_ZONE')
+    segment_id_col : str
+        Name of segment ID column
+    feature_name : str
+        Output column name
+        
     Returns:
-    - DataFrame with segment_id and dominant zone value.
+    --------
+    GeoDataFrame with segment IDs and their assigned zone types
     """
-
     # Ensure CRS match
     if segments_gdf.crs != attribute_gdf.crs:
         attribute_gdf = attribute_gdf.to_crs(segments_gdf.crs)
 
-    # Ensure valid geometries
-    segments_gdf = segments_gdf[segments_gdf.is_valid]
-    attribute_gdf = attribute_gdf[attribute_gdf.is_valid]
-
-    # Spatial join: all intersecting zones
+    # First try direct spatial join with 'within'
     joined = gpd.sjoin(
         segments_gdf[[segment_id_col, 'geometry']], 
         attribute_gdf[[value_column, 'geometry']],
         how="left",
-        predicate="intersects"
+        predicate="within"
     )
 
-    # For segments with NaN, try 'within'
-    missing = joined[joined[value_column].isna()][segment_id_col]
-    if not missing.empty:
-        missing_segments = segments_gdf[segments_gdf[segment_id_col].isin(missing)]
-        joined_within = gpd.sjoin(
-            missing_segments[[segment_id_col, 'geometry']],
-            attribute_gdf[[value_column, 'geometry']],
-            how="left",
-            predicate="within"
-        )
-        # Fill missing values
-        joined.loc[joined[segment_id_col].isin(missing), value_column] = joined_within[value_column].values
+    # For segments that cross zone boundaries, compute overlap
+    if joined[value_column].isna().any():
+        # Get segments without a zone assignment
+        missing_segments = segments_gdf[
+            ~segments_gdf[segment_id_col].isin(
+                joined[~joined[value_column].isna()][segment_id_col]
+            )
+        ]
+        
+        # For these segments, intersect with zones and take the one with max overlap
+        for idx, segment in missing_segments.iterrows():
+            # Find intersecting zones
+            intersecting = attribute_gdf[attribute_gdf.intersects(segment.geometry)]
+            if len(intersecting) > 0:
+                # Calculate overlap lengths
+                overlaps = [(
+                    zone[value_column],
+                    segment.geometry.intersection(zone.geometry).length
+                ) for _, zone in intersecting.iterrows()]
+                
+                # Take zone with maximum overlap
+                max_zone = max(overlaps, key=lambda x: x[1])[0]
+                
+                # Assign to joined DataFrame
+                joined.loc[joined[segment_id_col] == segment[segment_id_col], value_column] = max_zone
 
-
-    # Compute overlap geometries (with tqdm for progress)
-    tqdm.pandas(desc="Computing overlaps")
-    # Compute overlap geometries
-    joined["overlap_geom"] = joined.apply(
-        lambda row: row.geometry.intersection(attribute_gdf.loc[row["index_right"]].geometry)
-        if pd.notnull(row["index_right"]) else None,
-        axis=1
-    )
-    joined = joined[joined["overlap_geom"].notnull()].copy()
-    joined["overlap_area"] = joined["overlap_geom"].area
-
-    # Find the zone with the largest overlap for each segment
+    # Prepare output
     col_name = feature_name if feature_name else value_column
-    dominant = (
-        joined.loc[joined.groupby(segment_id_col)["overlap_area"].idxmax()]
-        [[segment_id_col, value_column]]
+    result = (
+        joined[[segment_id_col, value_column]]
         .rename(columns={value_column: col_name})
-        .reset_index(drop=True)
     )
-
-    # Merge back to segments_gdf to ensure all segments are present
-    result = segments_gdf[[segment_id_col]].merge(dominant, on=segment_id_col, how="left")
+    
     return result
