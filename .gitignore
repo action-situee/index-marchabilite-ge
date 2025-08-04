@@ -81,7 +81,6 @@ Data/temp_/
 *.shx
 *.prj
 *.cpg
-*.gpkg
 *.geojson
 
 # Bases de données
