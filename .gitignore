@@ -74,6 +74,7 @@ Data/temp_/
 *.xlsx
 *.xls
 *.json
+*.gpkg
 
 # Fichiers géospatiaux
 *.shp
@@ -81,6 +82,7 @@ Data/temp_/
 *.shx
 *.prj
 *.cpg
+*.gpkg
 *.geojson
 
 # Bases de données
