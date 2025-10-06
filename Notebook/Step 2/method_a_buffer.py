@@ -1,6 +1,9 @@
 import geopandas as gpd
 import pandas as pd
+import numpy as np
 from shapely.geometry import Polygon
+import rasterio
+from rasterstats import zonal_stats
 
 def extract_buffer_feature(
     segments_gdf: gpd.GeoDataFrame,
@@ -15,7 +18,8 @@ def extract_buffer_feature(
     predicate: str | None = None,      # None => choix par défaut adapté au type
     feature_query: str | None = None,  # ex: "OBJET == 'fontaine'"
     segment_length_col: str | None = None,  # si déjà calculée (ex. "length_m")
-    zero_for_missing: bool = True      # True: segments sans match = 0/False
+    zero_for_missing: bool = True,      # True: segments sans match = 0/False
+    raster_stats: str = "mean"         # "mean" | "max" | "min" | "sum" | "std" | "count"
 ) -> pd.DataFrame:
     """
     Calcule un indicateur local pour chaque segment en fonction d'une couche de points/lignes/polygones.
@@ -31,8 +35,8 @@ def extract_buffer_feature(
 
     if geom_kind not in {"point", "line", "polygon"}:
         raise ValueError("geom_kind must be 'point', 'line', or 'polygon'")
-    if how not in {"presence", "count", "sum", "length_ratio", "area_ratio"}:
-        raise ValueError("how must be 'presence', 'count', 'sum', 'length_ratio', or 'area_ratio'")
+    if how not in {"presence", "count", "sum", "length_ratio", "area_ratio", "raster"}:
+        raise ValueError("how must be 'presence', 'count', 'sum', 'length_ratio', 'area_ratio' or 'raster")
     if how == "length_ratio" and geom_kind != "line":
         raise ValueError("length_ratio requires geom_kind='line'")
     if how == "area_ratio" and geom_kind != "polygon":
@@ -104,16 +108,16 @@ def extract_buffer_feature(
             out[feature_name] = out[feature_name].fillna(0).astype(float) if zero_for_missing else out[feature_name]
             return out[["segment_id", feature_name]]
 
-        # how == "sum"
-        # sécurité: convertir en numérique (coerce -> NaN) puis sommer
-        joined[value_column] = pd.to_numeric(joined[value_column], errors="coerce")
-        agg = (joined.groupby("segment_id")[value_column]
-                     .sum(min_count=1)  # NaN si aucun num valide
-                     .rename(feature_name)
-                     .reset_index())
-        out = seg[["segment_id"]].merge(agg, on="segment_id", how="left")
-        out[feature_name] = out[feature_name].fillna(0.0) if zero_for_missing else out[feature_name]
-        return out[["segment_id", feature_name]]
+        if how == "sum":
+            # sécurité: convertir en numérique (coerce -> NaN) puis sommer
+            joined[value_column] = pd.to_numeric(joined[value_column], errors="coerce")
+            agg = (joined.groupby("segment_id")[value_column]
+                        .sum(min_count=1)  # NaN si aucun num valide
+                        .rename(feature_name)
+                        .reset_index())
+            out = seg[["segment_id"]].merge(agg, on="segment_id", how="left")
+            out[feature_name] = out[feature_name].fillna(0.0) if zero_for_missing else out[feature_name]
+            return out[["segment_id", feature_name]]
 
     # 2) Ratios: length_ratio (lines) / area_ratio (polygons)
     # Pré-filtrage spatial pour limiter overlay
@@ -149,18 +153,52 @@ def extract_buffer_feature(
         out[feature_name] = out[feature_name].fillna(0.0) if zero_for_missing else out[feature_name]
         return out[["segment_id", feature_name]]
 
-    # how == "area_ratio"
-    inter["_val"] = inter.area
-    area_sum = (inter.groupby("segment_id")["_val"]
-                       .sum()
-                       .rename("_area_in_buf")
-                       .reset_index())
-    out = seg_buf[["segment_id", "_buf_area"]].merge(area_sum, on="segment_id", how="left")
-    out["_area_in_buf"] = out["_area_in_buf"].fillna(0.0)
-    out[feature_name] = out["_area_in_buf"] / out["_buf_area"].replace({0: pd.NA})
-    out[feature_name] = out[feature_name].fillna(0.0) if zero_for_missing else out[feature_name]
-    return out[["segment_id", feature_name]]
+    if how == "area_ratio":
+        inter["_val"] = inter.area
+        area_sum = (inter.groupby("segment_id")["_val"]
+                        .sum()
+                        .rename("_area_in_buf")
+                        .reset_index())
+        out = seg_buf[["segment_id", "_buf_area"]].merge(area_sum, on="segment_id", how="left")
+        out["_area_in_buf"] = out["_area_in_buf"].fillna(0.0)
+        out[feature_name] = out["_area_in_buf"] / out["_buf_area"].replace({0: pd.NA})
+        out[feature_name] = out[feature_name].fillna(0.0) if zero_for_missing else out[feature_name]
+        return out[["segment_id", feature_name]]
 
+    # 3) Raster analysis
+    if how == "raster":
+        if value_column is None:
+            raise ValueError("how='raster' requires value_column (e.g. 'temperature')")
+
+        # Spatial join: points inside each buffer
+        joined = gpd.sjoin(
+            seg_buf[["segment_id", "geometry"]],
+            feat[["geometry", value_column]],
+            how="left",
+            predicate="intersects"
+        )
+
+        if joined.empty:
+            out = seg[["segment_id"]].copy()
+            out[feature_name] = 0.0 if zero_for_missing else pd.NA
+            return out
+
+        # Aggregate according to raster_stats
+        if raster_stats == "mean":
+            agg = joined.groupby("segment_id")[value_column].mean()
+        else:
+            raise ValueError(f"Unsupported raster_stats: {raster_stats}")
+
+        agg = agg.rename(feature_name).reset_index()
+        out = seg[["segment_id"]].merge(agg, on="segment_id", how="left")
+
+        if zero_for_missing:
+            if raster_stats in {"mean", "max", "min", "sum", "std"}:
+                out[feature_name] = out[feature_name].fillna(0.0)
+            elif raster_stats == "count":
+                out[feature_name] = out[feature_name].fillna(0).astype(int)
+
+        return out[["segment_id", feature_name]]
 
 # import geopandas as gpd
 
