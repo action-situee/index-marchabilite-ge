@@ -116,3 +116,5 @@ Data/temp_/
 # Logs
 *.log
 .DS_Store
+[Dd]ata*/
+Data_old/
