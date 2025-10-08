@@ -56,6 +56,8 @@ htmlcov/
 
 # Dossiers de données
 Data/
+[Dd]ata*/
+Data_old/
 Results/
 Results_dynamite/
 temp_/
@@ -116,5 +118,3 @@ Data/temp_/
 # Logs
 *.log
 .DS_Store
-[Dd]ata*/
-Data_old/
