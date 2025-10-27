@@ -36,8 +36,8 @@ def extract_buffer_feature(
 
     if geom_kind not in {"point", "line", "polygon"}:
         raise ValueError("geom_kind must be 'point', 'line', or 'polygon'")
-    if how not in {"presence", "count", "sum", "length_ratio", "area_ratio", "raster"}:
-        raise ValueError("how must be 'presence', 'count', 'sum', 'length_ratio', 'area_ratio' or 'raster")
+    if how not in {"presence", "count", "sum", "length_ratio", "area_ratio", "raster", "length_area_ratio"}:
+        raise ValueError("how must be 'presence', 'count', 'sum', 'length_ratio', 'area_ratio', 'length_area_ratio' or 'raster' ")
     if how == "length_ratio" and geom_kind != "line":
         raise ValueError("length_ratio requires geom_kind='line'")
     if how == "area_ratio" and geom_kind != "polygon":
@@ -187,3 +187,66 @@ def extract_buffer_feature(
                 out[feature_name] = out[feature_name].fillna(0).astype(int)
 
         return out[["segment_id", feature_name]]
+    
+    
+        # 4) length_area_ratio (segment buffer overlap with polygons)
+    if how == "length_area_ratio":
+        # Use segment buffers to get smoother, proximity-sensitive values
+        seg_buf["_buf_area"] = seg_buf.geometry.area
+
+        # Pre-filter with spatial join for speed
+        joined = gpd.sjoin(
+            seg_buf[["segment_id", "geometry"]],
+            feat[["geometry"]],
+            how="inner",
+            predicate="intersects"
+        )
+
+        if joined.empty:
+            out = seg[["segment_id"]].copy()
+            out[feature_name] = 0.0 if zero_for_missing else pd.NA
+            return out
+
+        # Compute exact intersection geometries
+        buf_for_overlay = gpd.GeoDataFrame(
+            joined[["segment_id", "geometry"]],
+            geometry="geometry",
+            crs=seg_buf.crs
+        )
+        inter = gpd.overlay(
+            buf_for_overlay,
+            feat[["geometry"]],
+            how="intersection",
+            keep_geom_type=False
+        )
+
+        if inter.empty:
+            out = seg[["segment_id"]].copy()
+            out[feature_name] = 0.0 if zero_for_missing else pd.NA
+            return out
+
+        # Compute intersection area within each buffer
+        inter["_area_in_buf"] = inter.geometry.area
+
+        # Sum of intersection areas per segment
+        area_sum = (
+            inter.groupby("segment_id")["_area_in_buf"]
+            .sum()
+            .rename("area_in_green")
+            .reset_index()
+        )
+
+        # Merge back with total buffer area
+        out = seg_buf[["segment_id", "_buf_area"]].merge(area_sum, on="segment_id", how="left")
+        out["area_in_green"] = out["area_in_green"].fillna(0.0)
+
+        # Ratio: portion of buffer covered by green polygons
+        out[feature_name] = out["area_in_green"] / out["_buf_area"]
+        out[feature_name] = out[feature_name].clip(0, 1)
+        out[feature_name] = (
+            out[feature_name].fillna(0.0) if zero_for_missing else out[feature_name]
+        )
+
+        return out[["segment_id", feature_name]]
+
+        
