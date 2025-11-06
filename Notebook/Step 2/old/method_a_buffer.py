@@ -12,38 +12,32 @@ def extract_buffer_feature(
     feature_name: str,
     *,
     geom_kind: str,                    # "point" | "line" | "polygon"
-    how: str,                          # "presence" | "count" | "sum" | "length_ratio" | "area_ratio"
+    how: str,                          # "presence" | "count" | "sum" | "mean" | "length_ratio" | "area_ratio"
     buffer_radius: float = 50.0,
-    value_column: str | None = None,   # utilisé si how="sum"
-    crs_meter_epsg: int | None = None, # ex. 2056
-    predicate: str | None = None,      # None => choix par défaut adapté au type
-    feature_query: str | None = None,  # ex: "OBJET == 'fontaine'"
-    segment_length_col: str | None = None,  # si déjà calculée (ex. "length_m")
-    zero_for_missing: bool = True,      # True: segments sans match = 0/False
-    raster_stats: str = "mean"         # "mean" | "max" | "min" | "sum" | "std" | "count"
+    value_column: str | None = None,   # utilisé si how="sum" ou how="mean"
+    crs_meter_epsg: int | None = None,
+    predicate: str | None = None,
+    feature_query: str | None = None,
+    segment_length_col: str | None = None,
+    zero_for_missing: bool = True,
+    raster_stats: str = "mean"
 ) -> pd.DataFrame:
     """
-    Calcule un indicateur local pour chaque segment en fonction d'une couche de points/lignes/polygones.
-
-    - presence: booléen (au moins un objet intersecte le buffer)
-    - count: nombre d'objets dans le buffer
-    - sum: somme d'une colonne numérique (value_column) pour les objets dans le buffer
-    - length_ratio (geom_kind='line'):  sum(length(layer ∩ buffer)) / length(segment)
-    - area_ratio   (geom_kind='polygon'): sum(area(layer ∩ buffer)) / area(buffer)
-
-    Retour: DataFrame ["segment_id", feature_name]
+    ...
+    - mean: moyenne d'une colonne numérique (value_column) pour les objets dans le buffer
+    ...
     """
 
     if geom_kind not in {"point", "line", "polygon"}:
         raise ValueError("geom_kind must be 'point', 'line', or 'polygon'")
-    if how not in {"presence", "count", "sum", "length_ratio", "area_ratio", "raster", "length_area_ratio"}:
-        raise ValueError("how must be 'presence', 'count', 'sum', 'length_ratio', 'area_ratio', 'length_area_ratio' or 'raster' ")
+    if how not in {"presence", "count", "sum", "mean", "length_ratio", "area_ratio", "raster", "length_area_ratio"}:
+        raise ValueError("how must be 'presence', 'count', 'sum', 'mean', 'length_ratio', 'area_ratio', 'length_area_ratio' or 'raster' ")
     if how == "length_ratio" and geom_kind != "line":
         raise ValueError("length_ratio requires geom_kind='line'")
     if how == "area_ratio" and geom_kind != "polygon":
         raise ValueError("area_ratio requires geom_kind='polygon'")
-    if how == "sum" and not value_column:
-        raise ValueError("how='sum' requires value_column")
+    if how in {"sum", "mean"} and not value_column:
+        raise ValueError(f"how='{how}' requires value_column")
 
     # Sélection du prédicat par défaut
     if predicate is None:
@@ -86,9 +80,8 @@ def extract_buffer_feature(
         feat.loc[invalid_mask, 'geometry'] = feat.loc[invalid_mask, 'geometry'].buffer(0)
 
 
-    # 1) Cas simples: presence / count / sum  (vectorisé via sjoin)
-    if how in {"presence", "count", "sum"}:
-        # pour sum, on a besoin de la colonne de valeur dans le join
+    # 1) Cas simples: presence / count / sum / mean (vectorisé via sjoin)
+    if how in {"presence", "count", "sum", "mean"}:
         right_cols = ["geometry"] if how in {"presence", "count"} else ["geometry", value_column]
         joined = gpd.sjoin(
             seg_buf[["segment_id", "geometry"]],
@@ -96,6 +89,18 @@ def extract_buffer_feature(
             how="inner",
             predicate=predicate
         )
+
+        if how == "presence":
+            # 1 si au moins une feature intersecte, 0 sinon
+            agg = (joined.groupby("segment_id")
+                         .size()
+                         .gt(0)
+                         .astype(int)
+                         .rename(feature_name)
+                         .reset_index())
+            out = seg[["segment_id"]].merge(agg, on="segment_id", how="left")
+            out[feature_name] = out[feature_name].fillna(0).astype(int) if zero_for_missing else out[feature_name]
+            return out[["segment_id", feature_name]]
 
         if how == "count":
             agg = (joined.groupby("segment_id")
@@ -107,10 +112,19 @@ def extract_buffer_feature(
             return out[["segment_id", feature_name]]
 
         if how == "sum":
-            # sécurité: convertir en numérique (coerce -> NaN) puis sommer
             joined[value_column] = pd.to_numeric(joined[value_column], errors="coerce")
             agg = (joined.groupby("segment_id")[value_column]
-                        .sum(min_count=1)  # NaN si aucun num valide
+                        .sum(min_count=1)
+                        .rename(feature_name)
+                        .reset_index())
+            out = seg[["segment_id"]].merge(agg, on="segment_id", how="left")
+            out[feature_name] = out[feature_name].fillna(0.0) if zero_for_missing else out[feature_name]
+            return out[["segment_id", feature_name]]
+
+        if how == "mean":
+            joined[value_column] = pd.to_numeric(joined[value_column], errors="coerce")
+            agg = (joined.groupby("segment_id")[value_column]
+                        .mean()
                         .rename(feature_name)
                         .reset_index())
             out = seg[["segment_id"]].merge(agg, on="segment_id", how="left")
