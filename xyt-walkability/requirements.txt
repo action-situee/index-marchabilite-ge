@@ -1,0 +1,15 @@
+geopandas
+pandas
+numpy
+shapely
+matplotlib
+folium
+osmnx
+networkx
+branca
+rasterio
+scikit-learn
+scipy
+plotly
+pyarrow
+click
