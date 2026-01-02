@@ -1,0 +1,19 @@
+# requirements.txt (nettoyé)
+# Seuls les packages nécessaires aux notebooks/scripts sont listés
+geopandas>=0.14
+pandas>=2.2
+numpy>=1.26
+shapely>=2.0
+matplotlib>=3.10
+folium>=0.20
+osmnx>=2.0
+networkx>=3.4
+branca>=0.8
+rasterio>=1.4
+scikit-learn>=1.7
+scipy>=1.11,<1.13
+plotly>=6.1
+pyarrow>=12
+jupyterlab
+ipykernel
+ipywidgets
