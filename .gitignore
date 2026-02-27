@@ -50,6 +50,9 @@ build/
 htmlcov/
 .tox/
 
+#Claude folder
+.claude/
+
 # ===============================
 # DONNÉES ET FICHIERS VOLUMINEUX
 # ===============================
