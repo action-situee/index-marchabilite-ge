@@ -53,6 +53,10 @@ htmlcov/
 #Claude folder
 .claude/
 
+#PANEL LERMANIQUE ANALYSES
+
+Notebook/PANEL_LEMANIQUE/
+
 # ===============================
 # DONNÉES ET FICHIERS VOLUMINEUX
 # ===============================
